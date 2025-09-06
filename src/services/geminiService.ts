@@ -195,21 +195,43 @@ This is essential for proper JSON parsing.`;
         // First attempt to parse the JSON as-is
         parsedResponse = JSON.parse(cleanedResponse);
       } catch (parseError) {
-        // If parsing fails due to bad escaped characters, try to fix backslashes
-        if (parseError instanceof SyntaxError && parseError.message.includes('Bad escaped character')) {
-          console.log('Initial JSON parse failed, attempting to fix backslash escaping...');
+        // If parsing fails due to bad escaped characters, try comprehensive sanitization
+        if (parseError instanceof SyntaxError && (parseError.message.includes('Bad escaped character') || parseError.message.includes('Unexpected token'))) {
+          console.log('Initial JSON parse failed, attempting comprehensive character sanitization...');
           
-          // Fix unescaped backslashes in KaTeX expressions
-          // This regex finds backslashes that are not already properly escaped
-          // and are followed by letters (common in KaTeX like \frac, \sqrt, etc.)
-          const fixedResponse = cleanedResponse.replace(/\\(?![\\"/bfnrt]|u[0-9a-fA-F]{4})/g, '\\\\');
+          // Comprehensive JSON sanitization
+          let fixedResponse = cleanedResponse;
+          
+          // 1. Fix unescaped backslashes in KaTeX expressions
+          fixedResponse = fixedResponse.replace(/\\(?![\\"/bfnrt]|u[0-9a-fA-F]{4})/g, '\\\\');
+          
+          // 2. Fix unescaped control characters
+          fixedResponse = fixedResponse.replace(/[\x00-\x1F]/g, (match) => {
+            switch (match) {
+              case '\n': return '\\n';
+              case '\r': return '\\r';
+              case '\t': return '\\t';
+              case '\b': return '\\b';
+              case '\f': return '\\f';
+              default: return '\\u' + ('0000' + match.charCodeAt(0).toString(16)).slice(-4);
+            }
+          });
+          
+          // 3. Fix unescaped quotes within string values (but not the structural quotes)
+          // This is more complex - we need to escape quotes that are inside string values
+          fixedResponse = fixedResponse.replace(/"([^"\\]*(\\.[^"\\]*)*)"/g, (match, content) => {
+            // Only process if this looks like a string value (not a key)
+            const escapedContent = content.replace(/(?<!\\)"/g, '\\"');
+            return `"${escapedContent}"`;
+          });
           
           try {
             parsedResponse = JSON.parse(fixedResponse);
-            console.log('Successfully parsed JSON after fixing backslash escaping');
+            console.log('Successfully parsed JSON after comprehensive sanitization');
           } catch (secondParseError) {
-            console.error('Failed to parse JSON even after fixing backslashes:', secondParseError);
-            throw new Error('Failed to parse Gemini response as JSON after backslash correction');
+            console.error('Failed to parse JSON even after comprehensive sanitization:', secondParseError);
+            console.log('Final sanitized response:', fixedResponse);
+            throw new Error('Failed to parse Gemini response as JSON after comprehensive sanitization');
           }
         } else {
           // Re-throw the original error if it's not related to escaped characters
