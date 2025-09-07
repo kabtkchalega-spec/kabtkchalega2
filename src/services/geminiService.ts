@@ -142,6 +142,7 @@ CRITICAL REQUIREMENTS - Generate a NEW ${questionType} question that:
    IMPORTANT: In JSON strings, ALL backslashes must be double-escaped (e.g., use "\\\\frac{1}{2}" not "\\frac{1}{2}")
 5. MUST have the appropriate difficulty level matching ${examName} standards
 6. ANSWER VALIDATION: ${questionType === 'MCQ' ? 'The correct answer MUST be one of the provided options (A, B, C, or D)' : ''}${questionType === 'MSQ' ? 'The correct answer MUST be a combination of the provided options (e.g., AB, BC, ACD)' : ''}${questionType === 'NAT' ? 'The answer MUST be a precise numerical value (integer or decimal)' : ''}${questionType === 'Subjective' ? 'The answer should be a comprehensive descriptive response' : ''}
+7. The question language should be same as ${existingQuestionsText} and should be in proper katex renderable format and in readable format;
 
 Question Type: ${questionType}
 ${questionType === 'MCQ' ? 'Single correct answer' : ''}
