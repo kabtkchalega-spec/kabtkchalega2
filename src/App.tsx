@@ -183,18 +183,33 @@ function App() {
 
   const generateNewQuestions = async () => {
     const config = questionConfigs[selectedQuestionType];
-    const questionsPerTopic = Math.ceil(numberOfQuestions / topics.length);
+    
+    // Filter topics that have PYQs
+    const topicsWithPYQs = [];
+    for (const topic of topics) {
+      const pyqs = await databaseService.getPYQsByTopic(topic.id);
+      if (pyqs.length > 0) {
+        topicsWithPYQs.push(topic);
+      }
+    }
+    
+    if (topicsWithPYQs.length === 0) {
+      setError('No topics found with existing PYQ questions. Cannot generate relevant questions.');
+      return;
+    }
+    
+    const questionsPerTopic = Math.ceil(numberOfQuestions / topicsWithPYQs.length);
     let questionCount = 0;
     let topicIndex = 0;
     const generated: any[] = [];
 
-    while (questionCount < numberOfQuestions && topicIndex < topics.length) {
+    while (questionCount < numberOfQuestions && topicIndex < topicsWithPYQs.length) {
       if (shouldStop) {
         setCurrentProgress('Generation stopped by user');
         break;
       }
       
-      const topic = topics[topicIndex];
+      const topic = topicsWithPYQs[topicIndex];
       setCurrentTopic(topic.name);
       setCurrentProgress(`Generating question ${questionCount + 1} of ${numberOfQuestions} for topic: ${topic.name}`);
 
@@ -226,15 +241,16 @@ function App() {
         questionCount++;
         setCurrentQuestion(questionCount);
 
-        // Delay to prevent rate limiting
-        await geminiService.delay(8000); // Increased delay to 8 seconds
+        // Delay to prevent rate limiting - increased for better quality
+        await geminiService.delay(10000); // 10 seconds for robust generation
 
       } catch (error) {
         console.error(`Error generating question for topic ${topic.name}:`, error);
+        // Continue to next topic instead of stopping
       }
 
       // Move to next topic (round-robin)
-      topicIndex = (topicIndex + 1) % topics.length;
+      topicIndex = (topicIndex + 1) % topicsWithPYQs.length;
       
       // If we've gone through all topics once, start over
       if (topicIndex === 0 && questionCount < numberOfQuestions) {
@@ -402,7 +418,7 @@ function App() {
               ))}
             </div>
             <p className="text-sm text-gray-600 mt-2">
-              The system will automatically switch to the next API key if one fails. At least one API key is required.
+              Will generate approximately {Math.ceil(numberOfQuestions / topics.length)} {generationMode === 'questions' ? 'questions' : 'solutions'} per topic ({topics.length} topics available, filtering for topics with PYQs)
             </p>
           </div>
 

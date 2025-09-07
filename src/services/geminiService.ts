@@ -110,6 +110,10 @@ export class GeminiService {
     existingQuestions: QuestionTopicWise[] = [],
     generatedQuestions: any[] = []
   ): Promise<any> {
+    if (existingQuestions.length === 0) {
+      throw new Error(`No PYQ questions found for topic ${topic.name}. Cannot generate relevant questions.`);
+    }
+
     const existingQuestionsText = existingQuestions.length > 0 
       ? existingQuestions.map(q => `Question: ${q.question_statement}\nOptions: ${q.options?.join(', ')}`).join('\n\n')
       : 'No previous year questions available for this topic.';
@@ -118,24 +122,26 @@ export class GeminiService {
       ? generatedQuestions.map(q => `Generated Question: ${q.question_statement}`).join('\n\n')
       : '';
 
-    const prompt = `You are a professor of ${examName} exam for the ${courseName} course, specifically teaching ${subjectName} subject.
+    const prompt = `You are an expert professor of ${examName} exam for the ${courseName} course, specifically teaching ${subjectName} subject.
 
 Topic: ${topic.name}
 Topic Description: ${topic.description || 'No description available'}
-Topic Notes: ${topic.notes || 'No notes available'}
+Topic Theory Notes: ${topic.notes || 'No detailed notes available'}
+Topic Short Notes: ${topic.short_notes || 'No short notes available'}
 
 Previous Year Questions for this topic:
 ${existingQuestionsText}
 
 ${generatedQuestionsText ? `Previously Generated Questions (DO NOT REPEAT):\n${generatedQuestionsText}\n` : ''}
 
-Generate a NEW ${questionType} question for this topic that:
-1. Follows the pattern and difficulty level of previous year questions
-2. Is completely original and not a copy of existing questions
-3. Tests the core concepts from the topic notes
-4. Uses proper KaTeX formatting for all mathematical expressions, formulas, tables, and diagrams
+CRITICAL REQUIREMENTS - Generate a NEW ${questionType} question that:
+1. MUST follow the exact pattern, style, and difficulty level of the provided previous year questions
+2. MUST be completely original and not a copy of existing questions
+3. MUST test the core concepts from the topic theory notes provided above
+4. MUST use proper KaTeX formatting for all mathematical expressions, formulas, tables, and diagrams
    IMPORTANT: In JSON strings, ALL backslashes must be double-escaped (e.g., use "\\\\frac{1}{2}" not "\\frac{1}{2}")
-5. Has the appropriate difficulty level for ${examName}
+5. MUST have the appropriate difficulty level matching ${examName} standards
+6. ANSWER VALIDATION: ${questionType === 'MCQ' ? 'The correct answer MUST be one of the provided options (A, B, C, or D)' : ''}${questionType === 'MSQ' ? 'The correct answer MUST be a combination of the provided options (e.g., AB, BC, ACD)' : ''}${questionType === 'NAT' ? 'The answer MUST be a precise numerical value (integer or decimal)' : ''}${questionType === 'Subjective' ? 'The answer should be a comprehensive descriptive response' : ''}
 
 Question Type: ${questionType}
 ${questionType === 'MCQ' ? 'Single correct answer' : ''}
@@ -153,12 +159,18 @@ Marking Scheme:
 ${slot ? `Slot: ${slot}` : ''}
 ${part ? `Part: ${part}` : ''}
 
+SOLUTION REQUIREMENTS:
+- Include detailed step-by-step working
+- Reference the theory from topic notes provided above
+- Explain the underlying concepts clearly
+- Use proper mathematical notation with KaTeX
+
 Return ONLY a valid JSON object with this exact structure:
 {
   "question_statement": "Question text with KaTeX formatting (remember to double-escape backslashes)",
   "options": ${questionType === 'MCQ' || questionType === 'MSQ' ? '["Option A", "Option B", "Option C", "Option D"]' : 'null'},
   "answer": "${questionType === 'NAT' ? 'numerical_value' : questionType === 'Subjective' ? 'descriptive_answer' : 'correct_option_letters_like_A_or_AB'}",
-  "solution": "Detailed step-by-step solution with KaTeX formatting (remember to double-escape backslashes)",
+  "solution": "Detailed step-by-step solution with theory from topic notes, KaTeX formatting (remember to double-escape backslashes)",
   "difficulty_level": "Easy|Medium|Hard"
 }
 
@@ -166,77 +178,35 @@ CRITICAL: In the JSON response, all backslashes in KaTeX expressions must be dou
 - Use "\\\\frac{1}{2}" instead of "\\frac{1}{2}"
 - Use "\\\\sqrt{x}" instead of "\\sqrt{x}"
 - Use "\\\\int" instead of "\\int"
-This is essential for proper JSON parsing.`;
+This is essential for proper JSON parsing.
+
+VALIDATION: Before finalizing, verify that:
+- The answer corresponds to the question type
+- ${questionType === 'MCQ' ? 'Answer is exactly one of A, B, C, D' : ''}${questionType === 'MSQ' ? 'Answer is a valid combination like AB, BC, ACD' : ''}${questionType === 'NAT' ? 'Answer is a numerical value' : ''}
+- Solution references the topic theory notes
+- All KaTeX expressions are properly double-escaped`;
 
     const response = await this.callGeminiAPI(prompt);
     
-    let cleanedResponse = '';
-    
     try {
-      // First, try to extract JSON from markdown code block
-      const markdownJsonMatch = response.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-      if (markdownJsonMatch) {
-        cleanedResponse = markdownJsonMatch[1];
-      } else {
-        // Fall back to finding the first complete JSON object
-        const jsonMatch = response.match(/\{[\s\S]*?\}/);
-        if (!jsonMatch) {
-          throw new Error('No valid JSON found in response');
-        }
-        cleanedResponse = jsonMatch[0];
+      const parsedResponse = this.extractAndParseJSON(response);
+      
+      // Validate the response structure
+      if (!parsedResponse.question_statement || !parsedResponse.answer || !parsedResponse.solution) {
+        throw new Error('Invalid response structure: missing required fields');
       }
       
-      // Clean up any remaining markdown or extra characters
-      cleanedResponse = cleanedResponse.trim();
+      // Validate answer format based on question type
+      if (questionType === 'MCQ' && !/^[A-D]$/.test(parsedResponse.answer)) {
+        throw new Error(`Invalid MCQ answer format: ${parsedResponse.answer}. Must be A, B, C, or D.`);
+      }
       
-      let parsedResponse;
+      if (questionType === 'MSQ' && !/^[A-D]+$/.test(parsedResponse.answer)) {
+        throw new Error(`Invalid MSQ answer format: ${parsedResponse.answer}. Must be combination like AB, BC, ACD.`);
+      }
       
-      try {
-        // First attempt to parse the JSON as-is
-        parsedResponse = JSON.parse(cleanedResponse);
-      } catch (parseError) {
-        // If parsing fails due to bad escaped characters, try comprehensive sanitization
-        if (parseError instanceof SyntaxError && (parseError.message.includes('Bad escaped character') || parseError.message.includes('Unexpected token'))) {
-          console.log('Initial JSON parse failed, attempting comprehensive character sanitization...');
-          
-          // Comprehensive JSON sanitization
-          let fixedResponse = cleanedResponse;
-          
-          // 1. Fix unescaped backslashes in KaTeX expressions
-          fixedResponse = fixedResponse.replace(/\\(?![\\"/bfnrt]|u[0-9a-fA-F]{4})/g, '\\\\');
-          
-          // 2. Fix unescaped control characters
-          fixedResponse = fixedResponse.replace(/[\x00-\x1F]/g, (match) => {
-            switch (match) {
-              case '\n': return '\\n';
-              case '\r': return '\\r';
-              case '\t': return '\\t';
-              case '\b': return '\\b';
-              case '\f': return '\\f';
-              default: return '\\u' + ('0000' + match.charCodeAt(0).toString(16)).slice(-4);
-            }
-          });
-          
-          // 3. Fix unescaped quotes within string values (but not the structural quotes)
-          // This is more complex - we need to escape quotes that are inside string values
-          fixedResponse = fixedResponse.replace(/"([^"\\]*(\\.[^"\\]*)*)"/g, (match, content) => {
-            // Only process if this looks like a string value (not a key)
-            const escapedContent = content.replace(/(?<!\\)"/g, '\\"');
-            return `"${escapedContent}"`;
-          });
-          
-          try {
-            parsedResponse = JSON.parse(fixedResponse);
-            console.log('Successfully parsed JSON after comprehensive sanitization');
-          } catch (secondParseError) {
-            console.error('Failed to parse JSON even after comprehensive sanitization:', secondParseError);
-            console.log('Final sanitized response:', fixedResponse);
-            throw new Error('Failed to parse Gemini response as JSON after comprehensive sanitization');
-          }
-        } else {
-          // Re-throw the original error if it's not related to escaped characters
-          throw parseError;
-        }
+      if (questionType === 'NAT' && isNaN(Number(parsedResponse.answer))) {
+        throw new Error(`Invalid NAT answer format: ${parsedResponse.answer}. Must be a numerical value.`);
       }
       
       return {
@@ -261,8 +231,7 @@ This is essential for proper JSON parsing.`;
     } catch (error) {
       console.error('Error parsing Gemini response:', error);
       console.log('Raw response:', response);
-      console.log('Cleaned response:', cleanedResponse);
-      throw new Error('Failed to parse Gemini response as JSON');
+      throw new Error(`Failed to parse Gemini response as JSON: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
@@ -305,6 +274,83 @@ Provide the complete detailed solution:`;
   // Add delay to prevent rate limiting
   async delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  private extractAndParseJSON(response: string): any {
+    let cleanedResponse = '';
+    
+    try {
+      // Method 1: Try to extract JSON from markdown code block
+      const markdownJsonMatch = response.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+      if (markdownJsonMatch) {
+        cleanedResponse = markdownJsonMatch[1].trim();
+      } else {
+        // Method 2: Find the first '{' and last '}' to capture complete JSON
+        const firstBrace = response.indexOf('{');
+        const lastBrace = response.lastIndexOf('}');
+        
+        if (firstBrace === -1 || lastBrace === -1 || firstBrace >= lastBrace) {
+          throw new Error('No valid JSON object found in response');
+        }
+        
+        cleanedResponse = response.substring(firstBrace, lastBrace + 1).trim();
+      }
+      
+      if (!cleanedResponse) {
+        throw new Error('Extracted JSON string is empty');
+      }
+      
+      // Method 3: Try parsing as-is first
+      try {
+        return JSON.parse(cleanedResponse);
+      } catch (parseError) {
+        // Method 4: Apply comprehensive sanitization if initial parsing fails
+        if (parseError instanceof SyntaxError) {
+          console.log('Initial JSON parse failed, applying comprehensive sanitization...');
+          
+          let fixedResponse = cleanedResponse;
+          
+          // Fix unescaped backslashes (for KaTeX)
+          fixedResponse = fixedResponse.replace(/\\(?![\\"/bfnrt]|u[0-9a-fA-F]{4})/g, '\\\\');
+          
+          // Fix control characters
+          fixedResponse = fixedResponse.replace(/[\x00-\x1F]/g, (match) => {
+            switch (match) {
+              case '\n': return '\\n';
+              case '\r': return '\\r';
+              case '\t': return '\\t';
+              case '\b': return '\\b';
+              case '\f': return '\\f';
+              default: return '\\u' + ('0000' + match.charCodeAt(0).toString(16)).slice(-4);
+            }
+          });
+          
+          // Fix unescaped quotes in string values
+          fixedResponse = fixedResponse.replace(/"([^"\\]*(\\.[^"\\]*)*)"/g, (match, content) => {
+            const escapedContent = content.replace(/(?<!\\)"/g, '\\"');
+            return `"${escapedContent}"`;
+          });
+          
+          try {
+            const result = JSON.parse(fixedResponse);
+            console.log('Successfully parsed JSON after sanitization');
+            return result;
+          } catch (secondError) {
+            console.error('Failed to parse JSON even after sanitization:', secondError);
+            console.log('Original response:', response);
+            console.log('Cleaned response:', cleanedResponse);
+            console.log('Fixed response:', fixedResponse);
+            throw new Error(`JSON parsing failed after all attempts: ${secondError instanceof Error ? secondError.message : 'Unknown error'}`);
+          }
+        } else {
+          throw parseError;
+        }
+      }
+    } catch (error) {
+      console.error('Error in extractAndParseJSON:', error);
+      console.log('Raw response:', response);
+      throw error;
+    }
   }
 }
 
